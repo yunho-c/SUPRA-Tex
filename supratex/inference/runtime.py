@@ -26,8 +26,11 @@ def _cuda_info(device: str) -> dict | None:
     selected = torch.device(device)
     index = selected.index if selected.index is not None else torch.cuda.current_device()
     properties = torch.cuda.get_device_properties(index)
-    return {"name": properties.name, "capability": (properties.major, properties.minor),
+    info = {"name": properties.name, "capability": (properties.major, properties.minor),
             "total_memory": properties.total_memory}
+    if torch.version.hip:
+        info.update(hip=torch.version.hip, architecture=properties.gcnArchName.split(":", 1)[0])
+    return info
 
 
 def _extension_available(name: str) -> bool:
@@ -40,6 +43,11 @@ def _extension_available(name: str) -> bool:
 
 def _resolve_attention(requested: str, info: dict | None) -> str:
     major = info["capability"][0] if info is not None else None
+    if info and info.get("hip"):
+        if requested == "auto":
+            return "sdpa"
+        if requested in ("flash_attn_3", "flash_attn_4"):
+            raise ValueError(f"{requested} requires NVIDIA hardware; select sdpa for ROCm.")
     if requested == "auto":
         if major == 9 and _extension_available("flash_attn_interface"):
             return "flash_attn_3"
@@ -107,6 +115,14 @@ def configure_inference_runtime(*, attention: str = "auto", low_vram: bool | Non
             module.set_attn_backend(sparse)
     result = {"attention": dense, "sparse_attention": sparse,
               "low_vram": bool(low_vram), "device": info}
+    if info and info.get("architecture") == "gfx942" and sparse == "sdpa":
+        from supratex.modules.sparse.attention.mi300 import resolve_mode
+        requested = "sdpa" if attention == "sdpa" else os.environ.get("SUPRATEX_MI300_ATTENTION", "auto")
+        mode = resolve_mode(requested)
+        os.environ["SUPRATEX_MI300_RESOLVED"] = mode
+        result["mi300_single_sequence_attention"] = mode
+        result["completion_noise"] = os.environ.get("SUPRATEX_MI300_NOISE", "a100")
+        print(f"[Supra-Tex inference] MI300X single-sequence attention={mode}", flush=True)
     print(f"[Supra-Tex inference] attention={dense}; sparse_attention={sparse}; "
           f"low_vram={bool(low_vram)}", flush=True)
     return result

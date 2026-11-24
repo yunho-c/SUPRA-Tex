@@ -121,8 +121,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--geometry-initial-mesh-scale", type=float, default=1.0)
     parser.add_argument("--geometry-scale-search", action="store_true",
                         help="enable bounded mesh-scale calibration (default: Pixal3D fixed scale)")
-    parser.add_argument("--parallel-frontend", action="store_true",
-                        help="run geometry and Qwen material concurrently on the first two visible GPUs")
+    parser.add_argument("--parallel-frontend", action=argparse.BooleanOptionalAction, default=None,
+                        help="run geometry and Qwen material concurrently on two GPUs or one high-memory MI300X")
     parser.add_argument("--geometry-target-padding", type=int, default=3, help="scale-search target padding")
     parser.add_argument("--geometry-max-iterations", type=int, default=2, help="scale-search update limit")
     parser.add_argument("--firered-package", type=Path, default=Path(__file__).resolve().parent / "supratex/frontend/material_model")

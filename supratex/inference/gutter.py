@@ -40,7 +40,8 @@ def pad_rgb(image: np.ndarray, chart: np.ndarray) -> tuple[np.ndarray, int]:
 def _rasterize_charts(uv: np.ndarray, faces: np.ndarray, size: tuple[int, int], device: str) -> np.ndarray:
     """Rasterize final GLB UVs in the same image-row convention as the baker."""
     import torch
-    import nvdiffrast.torch as dr
+    from .raster_backend import rasterizer
+    dr = rasterizer()
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
     from trimesh.graph import face_adjacency

@@ -3,12 +3,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-try:
-    NATTEN_RECENT = False
-    from natten.functional import na2d_av, na2d_qk
-except:
-    NATTEN_RECENT = True
-    from natten import na2d
+if torch.version.hip:
+    from src.layers.rocm_attention import neighborhood_attention
+else:
+    try:
+        NATTEN_RECENT = False
+        from natten.functional import na2d_av, na2d_qk
+    except ImportError:
+        NATTEN_RECENT = True
+        from natten import na2d
 
 from src.layers.rope import RoPE
 
@@ -55,6 +58,10 @@ class CrossAttention(nn.Module):
         hk, wk = k.shape[-2:]
         dilation = (hq // hk, wq // wk)
         self.dilation = dilation
+
+        if torch.version.hip:
+            return neighborhood_attention(q, k, v, self.num_heads, self.kernel_size,
+                                          self.scale, return_weights)
 
         q = rearrange(q, "b (n d) h w -> b h w n d", n=self.num_heads)
         k = self._resize(k, size=(hq, wq), dtype=q.dtype)

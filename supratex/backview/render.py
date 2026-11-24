@@ -41,7 +41,8 @@ class SilhouetteRasterizer:
 
     def __init__(self, vertices, faces, intrinsic):
         import torch
-        import nvdiffrast.torch as dr
+        from ..inference.raster_backend import rasterizer
+        dr = rasterizer()
         from supratex.renderers.mesh_renderer import intrinsics_to_projection
         self.dr, self.faces = dr, faces
         self.context = dr.RasterizeCudaContext(device=vertices.device)

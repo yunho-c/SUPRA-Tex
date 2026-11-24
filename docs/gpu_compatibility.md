@@ -6,6 +6,8 @@ Full-weight single-view inference has been validated with PyTorch SDPA on
 H800 80 GB and RTX 3090 24 GB. The RTX 3090 run used CPU offload and the
 default 4096-pixel texture atlas; see the measured configuration below.
 
+The AMD Instinct MI300X uses a separate ROCm runtime. [Installation and measured accuracy](mi300x.md)
+
 ## Device policy
 
 | Device | Default attention, without environment overrides | Default CPU offload |

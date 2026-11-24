@@ -137,6 +137,34 @@ def validate_completion_artifacts(model_config: str | Path, checkpoint: str | Pa
     return contract
 
 
+def completion_noise(shape, seed, device, torch):
+    """Draw a fresh field, optionally aligning a ROCm seed with the A100 release."""
+    if torch.version.hip and torch.device(device).type == "cuda":
+        arch = torch.cuda.get_device_properties(device).gcnArchName.split(":", 1)[0]
+        mode = os.environ.get("SUPRATEX_MI300_NOISE", "a100" if arch == "gfx942" else "native")
+        if mode == "a100":
+            from .mi300_noise import a100_noise
+            return a100_noise(shape, seed, device)
+        if mode != "native":
+            raise ValueError("SUPRATEX_MI300_NOISE accepts native or a100")
+    return torch.randn(shape, generator=torch.Generator(device=device).manual_seed(int(seed)), device=device)
+
+
+def _has_decoder_topology(latent, decoder_config: Path) -> bool:
+    """Check every inverse map the material decoder will use when subdividing."""
+    args = json.loads(decoder_config.read_text())["args"]
+    stages = args.get("up_block_type", [])
+    if not stages or args.get("pred_subdiv", True) or len(stages) != len(args["num_blocks"]) - 1:
+        return False
+    keys = {"SparseResBlockC2S3d": "channel2spatial_2", "SparseResBlockUpsample3d": "upsample_2"}
+    scale = latent._scale
+    for stage in stages:
+        if keys.get(stage) not in latent._spatial_cache.get(str(scale), {}):
+            return False
+        scale = tuple(s / 2 for s in scale)
+    return True
+
+
 def _load_vae(models: Any, stem: Path) -> Any:
     """Build a sparse VAE on the meta device so weights are not randomly initialized first.
 
@@ -454,7 +482,7 @@ def _run_completion_low_vram(*, case: Mapping[str, Any], back_case: Mapping[str,
     del state
     with _completion_stage(model, torch, device):
         shape_condition = shape.replace(feats=(shape.feats - torch.as_tensor(dataset["shape_slat_normalization"]["mean"], device=device)[None]) / torch.as_tensor(dataset["shape_slat_normalization"]["std"], device=device)[None])
-        noise = shape.replace(feats=torch.randn((shape.coords.shape[0], 32), generator=torch.Generator(device=device).manual_seed(int(seed)), device=device))
+        noise = shape.replace(feats=completion_noise((shape.coords.shape[0], 32), seed, device, torch))
         print("Observation cache: disabled (low VRAM)", flush=True)
         sampled = sample_material_latents(model, noise, concat_cond=shape_condition, partial_z_obs=observation, steps=25, rescale_t=3., sigma_min=1e-5, use_observation_cache=False).samples
         if not torch.equal(sampled.coords, noise.coords) or sampled.feats.shape != noise.feats.shape:
@@ -530,7 +558,7 @@ def _run_completion(*, input_dir: str | Path, output: str | Path, model_config: 
     model = build_completion_model(config, state, assign_weights=True).to(device).eval()
     del state
     shape_condition = shape.replace(feats=(shape.feats - torch.as_tensor(dataset["shape_slat_normalization"]["mean"], device=device)[None]) / torch.as_tensor(dataset["shape_slat_normalization"]["std"], device=device)[None])
-    noise = shape.replace(feats=torch.randn((shape.coords.shape[0], 32), generator=torch.Generator(device=device).manual_seed(int(seed)), device=device))
+    noise = shape.replace(feats=completion_noise((shape.coords.shape[0], 32), seed, device, torch))
     # Cache fixed observation work within this sample only. Retain ample room
     # for attention activations; low-memory devices keep the uncached path.
     cache_bytes = 2 * (len(model.blocks) + len(model.refiners)) * observation.feats.shape[0] * model.model_channels * 2
@@ -543,9 +571,14 @@ def _run_completion(*, input_dir: str | Path, output: str | Path, model_config: 
     generated = shape.replace(feats=sampled.feats.float() * torch.as_tensor(dataset["pbr_slat_normalization"]["std"], device=device)[None] + torch.as_tensor(dataset["pbr_slat_normalization"]["mean"], device=device)[None])
     model.to("cpu"); torch.cuda.empty_cache()
     shape_stem, material_stem = _stem(resolved(dataset["pretrained_shape_slat_dec"]), "shape decoder"), _stem(resolved(dataset["pretrained_pbr_slat_dec"]), "material decoder")
-    shape_decoder, material_decoder = _load_vae(models, shape_stem).to(device).eval(), _load_vae(models, material_stem).to(device).eval()
-    shape_decoder.set_resolution(RESOLUTION)
-    with torch.no_grad(): _, guide = shape_decoder(shape, return_subs=True); decoded = material_decoder(generated, guide_subs=guide) * .5 + .5
+    material_decoder = _load_vae(models, material_stem).to(device).eval()
+    with torch.no_grad():
+        guide = None
+        if not (torch.version.hip and _has_decoder_topology(generated, Path(f"{material_stem}.json"))):
+            shape_decoder = _load_vae(models, shape_stem).to(device).eval()
+            shape_decoder.set_resolution(RESOLUTION)
+            _, guide = shape_decoder(shape, return_subs=True)
+        decoded = material_decoder(generated, guide_subs=guide) * .5 + .5
     if decoded.feats.shape[1] != 6: raise RuntimeError("material decoder must emit six PBR channels")
     representation = runtime["MeshWithVoxel"](case["vertices"].to(device), case["faces"].to(device), [-.5, -.5, -.5], 1. / RESOLUTION, decoded.coords[:, 1:].int(), decoded.feats.float().clamp(0, 1), torch.Size([1, 6, RESOLUTION, RESOLUTION, RESOLUTION]), layout=LAYOUT)
     _export(Path(output), representation, texture_size, decimation_target, texture_format, runtime, gutter=gutter)

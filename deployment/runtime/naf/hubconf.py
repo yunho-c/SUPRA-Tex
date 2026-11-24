@@ -1,6 +1,6 @@
-dependencies = ["torch", "natten"]
-
 import torch
+
+dependencies = ["torch"] if torch.version.hip else ["torch", "natten"]
 
 from src.model.naf import NAF
 

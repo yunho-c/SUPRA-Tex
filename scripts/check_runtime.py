@@ -36,28 +36,34 @@ def import_checks(attention: str) -> list[tuple[str, str]]:
     bootstrap = ("from supratex.inference.runtime import configure_inference_runtime; "
                  f"configure_inference_runtime(attention={attention!r}, material_backend='qwen-image'); ")
     return [
-        ("Python, PyTorch and CUDA", """
+        ("Python, PyTorch and GPU", """
 import sys, torch, torchvision
-if sys.version_info[:2] != (3, 10):
-    raise RuntimeError('The supported installation uses Python 3.10')
-if torch.__version__.split('+')[0] != '2.6.0' or torch.version.cuda != '12.4':
-    raise RuntimeError('Expected PyTorch 2.6.0 with CUDA 12.4; got ' + str((torch.__version__, torch.version.cuda)))
-if torchvision.__version__.split('+')[0] != '0.21.0':
-    raise RuntimeError('Expected torchvision 0.21.0')
 if not torch.cuda.is_available():
-    raise RuntimeError('CUDA is unavailable; check the NVIDIA driver and GPU access')
+    raise RuntimeError('No accelerator available to PyTorch')
+if torch.version.hip:
+    arch = torch.cuda.get_device_properties(0).gcnArchName.split(':', 1)[0]
+    print(f'ROCm {torch.version.hip}, target {arch} (qualified target: gfx942)')
+else:
+    if sys.version_info[:2] != (3, 10):
+        raise RuntimeError('The supported CUDA installation uses Python 3.10')
+    if torch.__version__.split('+')[0] != '2.6.0' or torch.version.cuda != '12.4':
+        raise RuntimeError('Expected PyTorch 2.6.0 with CUDA 12.4; got ' + str((torch.__version__, torch.version.cuda)))
+    if torchvision.__version__.split('+')[0] != '0.21.0':
+        raise RuntimeError('Expected torchvision 0.21.0')
 x = torch.tensor([1., 2.], device='cuda')
 assert (x * x).sum().item() == 5.
 torch.cuda.synchronize()
 print(torch.cuda.get_device_name(0))
 """),
         ("Native extensions, MoGe and utils3d", """
-import torch, natten, natten.functional
+import torch
 import o_voxel, flex_gemm, cumesh, nvdiffrast.torch
 import moge.model.v2, utils3d
-if not (hasattr(natten.functional, 'na2d') or
-        all(hasattr(natten.functional, n) for n in ('na2d_av', 'na2d_qk'))):
-    raise RuntimeError('NATTEN does not expose the NAF attention API')
+if not torch.version.hip:
+    import natten.functional
+    if not (hasattr(natten.functional, 'na2d') or
+            all(hasattr(natten.functional, n) for n in ('na2d_av', 'na2d_qk'))):
+        raise RuntimeError('NATTEN does not expose the NAF attention API')
 assert hasattr(utils3d, 'pt'), 'Bundled utils3d API is required'
 print('Native modules and bundled camera utilities imported')
 """),

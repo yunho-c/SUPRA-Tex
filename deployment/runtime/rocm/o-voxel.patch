@@ -1,0 +1,77 @@
+diff --git a/o-voxel/setup.py b/o-voxel/setup.py
+index 91cb5ce..631fa47 100644
+--- a/o-voxel/setup.py
++++ b/o-voxel/setup.py
+@@ -55,8 +55,9 @@ setup(
+             include_dirs=[
+                 os.path.join(ROOT, "third_party/eigen"),
+             ],
++            extra_link_args=["-fopenmp"],
+             extra_compile_args={
+-                "cxx": ["-O3", "-std=c++17"],
++                "cxx": ["-O3", "-std=c++17", "-fopenmp"],
+                 "nvcc": ["-O3","-std=c++17"] + cc_flag,
+             }
+         )
+diff --git a/o-voxel/src/convert/flexible_dual_grid.cpp b/o-voxel/src/convert/flexible_dual_grid.cpp
+index ad89edc..ac2c7c0 100644
+--- a/o-voxel/src/convert/flexible_dual_grid.cpp
++++ b/o-voxel/src/convert/flexible_dual_grid.cpp
+@@ -1,3 +1,4 @@
++#include <ankerl/unordered_dense.h>
+ #include <Eigen/Dense>
+ #include <unordered_map>
+ #include <vector>
+@@ -63,7 +64,7 @@ void intersect_qef(
+     const Eigen::Vector3i& grid_min,
+     const Eigen::Vector3i& grid_max,
+     const std::vector<Eigen::Vector3f>& triangles, // 3 vertices per triangle
+-    std::unordered_map<VoxelCoord, size_t>& hash_table, // Hash table for voxel lookup
++    ankerl::unordered_dense::map<VoxelCoord, size_t>& hash_table, // Hash table for voxel lookup
+     std::vector<int3>& voxels, // Output: Voxel coordinates
+     std::vector<Eigen::Vector3f>& means, // Output: Mean vertex positions for each voxel
+     std::vector<float>& cnt, // Output: Number of intersections for each voxel
+@@ -177,7 +178,7 @@ void face_qef(
+     const Eigen::Vector3i& grid_min,
+     const Eigen::Vector3i& grid_max,
+     const std::vector<Eigen::Vector3f>& triangles, // 3 vertices per triangle
+-    std::unordered_map<VoxelCoord, size_t>& hash_table, // Hash table for voxel lookup
++    ankerl::unordered_dense::map<VoxelCoord, size_t>& hash_table, // Hash table for voxel lookup
+     std::vector<Eigen::Matrix4f>& qefs // Output: QEF matrices for each voxel
+ ) {
+     const size_t N_tri = triangles.size() / 3;
+@@ -294,7 +295,7 @@ void boundry_qef(
+     const Eigen::Vector3i& grid_max,
+     const std::vector<Eigen::Vector3f>& boundries, // 2 vertices per segment
+     const float boundary_weight,    // Weight for boundary edges
+-    std::unordered_map<VoxelCoord, size_t>& hash_table, // Hash table for voxel lookup
++    ankerl::unordered_dense::map<VoxelCoord, size_t>& hash_table, // Hash table for voxel lookup
+     std::vector<Eigen::Matrix4f>& qefs // Output: QEF matrices for each voxel
+ ) {
+     for (size_t i = 0; i < boundries.size() / 2; ++i) {
+@@ -416,7 +417,7 @@ std::array<int3, 2> quad_to_2tri(
+
+
+ void face_from_dual_vertices(
+-    const std::unordered_map<VoxelCoord, size_t>& hash_table,
++    const ankerl::unordered_dense::map<VoxelCoord, size_t>& hash_table,
+     const std::vector<int3>& voxels,
+     const std::vector<float3>& dual_vertices,
+     const std::vector<bool3>& intersected,
+@@ -487,7 +488,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> mesh_to_flexible_dual_gr
+     const float* voxel_size_ptr = voxel_size.data_ptr<float>();
+     const int* grid_range_ptr = grid_range.data_ptr<int>();
+     clock_t start, end;
+-    std::unordered_map<VoxelCoord, size_t> hash_table;
++    ankerl::unordered_dense::map<VoxelCoord, size_t> hash_table;
+     std::vector<int3> voxels; // Voxel coordinates
+     std::vector<Eigen::Vector3f> means; // Mean vertex positions for each voxel
+     std::vector<float> cnt; // Number of intersections for each voxel
+@@ -561,6 +562,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> mesh_to_flexible_dual_gr
+     // Solve the QEF system to obtain final dual vertices
+     start = clock();
+     std::vector<float3> dual_vertices(voxels.size());
++    #pragma omp parallel for schedule(static)
+     for (int i = 0; i < voxels.size(); ++i) {
+         int3 coord = voxels[i];
+         Eigen::Matrix4f Q = qefs[i];

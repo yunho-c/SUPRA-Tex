@@ -94,6 +94,10 @@ def explicit_load(model_class, component, device, dtype, converter=None):
     model.load_state_dict(state, strict=True, assign=True)
     del state
     model = model.to(device=device, dtype=dtype).eval()
+    if torch.version.hip and model_class.__name__ == "QwenImage21VAE":
+        # MIOpen propagates NHWC through the spatial convolutions when their
+        # weights have this layout, including after a staged CPU-to-GPU move.
+        torch.nn.utils.convert_conv2d_weight_memory_format(model, torch.channels_last)
     if any(parameter.is_meta for parameter in model.parameters()):
         raise RuntimeError(f"{model_class.__name__}: parameters remain on meta after strict checkpoint load")
     model.requires_grad_(False)

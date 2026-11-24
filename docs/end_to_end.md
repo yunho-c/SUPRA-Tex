@@ -91,6 +91,8 @@ fixed mesh scale (`--geometry-initial-mesh-scale 1.0`) by default;
 [geometry](geometry.md) for the calibration procedure and
 [frontend](frontend.md) for material formats. `--parallel-frontend` runs the
 geometry and Qwen material stages concurrently on the first two visible GPUs.
+On one MI300X with at least 128 GiB free, the default runs both stages concurrently
+on that device. Use `--no-parallel-frontend` for a serial run.
 
 ## Explicit model paths
 

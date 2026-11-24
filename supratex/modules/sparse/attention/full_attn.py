@@ -235,6 +235,10 @@ def sparse_scaled_dot_product_attention(*args, **kwargs):
             q, k, v = qkv.unbind(dim=1)   # [T, H, C] each
         elif num_all_args == 2:
             k, v = kv.unbind(dim=1)        # [T_KV, H, C] each
+        if torch.version.hip and q.is_cuda and len(q_seqlen) == 1:
+            from .mi300 import attention, selected_mode
+            out = attention(q, k, v, selected_mode(q, k, v))
+            return s.replace(out) if s is not None else out.reshape(N, L, H, -1)
         # process each batch element independently (no varlen kernel needed)
         q_offs  = [0] + list(torch.cumsum(torch.tensor(q_seqlen),  dim=0).tolist())
         kv_offs = [0] + list(torch.cumsum(torch.tensor(kv_seqlen), dim=0).tolist())

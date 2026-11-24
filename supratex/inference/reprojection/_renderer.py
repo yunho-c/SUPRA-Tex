@@ -51,7 +51,8 @@ def _runtime_imports() -> dict[str, Any]:
     import torch
     import torch.nn.functional as F
     import trimesh
-    import nvdiffrast.torch as dr
+    from ..raster_backend import rasterizer
+    dr = rasterizer()
     import utils3d
     from PIL import Image
     from supratex.renderers.mesh_renderer import intrinsics_to_projection

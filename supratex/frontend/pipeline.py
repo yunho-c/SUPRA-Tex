@@ -84,14 +84,24 @@ def predict_material_maps(rgba: Path, rgb: Path, output: Path, *,
     return albedo, mra
 
 
-def _split_frontend_gpus(material_backend: str, device: str) -> tuple[str, str]:
-    """Pick the first two visible GPUs for geometry and Qwen material."""
+def _frontend_devices(material_backend, device, requested, low_vram):
+    """Return child visibility overrides, or None for sequential inference."""
     import os
     import torch
 
-    if material_backend != "qwen-image" or device != "cuda" or torch.cuda.device_count() < 2:
+    if requested is False:
+        return None
+    compatible = material_backend == "qwen-image" and device == "cuda"
+    if compatible and torch.version.hip and torch.cuda.device_count() == 1 and not low_vram:
+        arch = torch.cuda.get_device_properties(0).gcnArchName.split(":", 1)[0]
+        if arch == "gfx942" and torch.cuda.mem_get_info(0)[0] >= 128 * 1024**3:
+            # Both isolated subprocesses inherit the same HIP/ROCR visibility.
+            return (None, None)
+    if requested is None:
+        return None
+    if not compatible or torch.cuda.device_count() < 2:
         raise ValueError("--parallel-frontend requires the qwen-image backend, device 'cuda', "
-                         "geometry generation, and at least two visible GPUs")
+                         "geometry generation, and two GPUs or one MI300X with 128 GiB free")
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     names = [name.strip() for name in visible.split(",")] if visible else [str(index) for index in range(torch.cuda.device_count())]
     return names[0], names[1]
@@ -111,7 +121,7 @@ def run(input_image: Path, output: Path, *, moge_model: str | Path,
         geometry_scale_search: bool = False, geometry_target_padding: int = 3, geometry_max_iterations: int = 2,
         geometry_seed: int = 42, record_material_provenance: bool = False,
         attention: str = "auto", low_vram: bool | None = None,
-        parallel_frontend: bool = False, export_image_depth: bool = True) -> dict[str, str]:
+        parallel_frontend: bool | None = None, export_image_depth: bool = True) -> dict[str, str]:
     """Build the condition, canonical camera, and material-map handoff in one directory."""
     if record_material_provenance and firered_manifest is not None:
         raise ValueError("material provenance does not support a custom FireRed manifest; "
@@ -124,10 +134,11 @@ def run(input_image: Path, output: Path, *, moge_model: str | Path,
         raise ValueError("--material-backend must be qwen-image or firered")
     if parallel_frontend and geometry_package is None:
         raise ValueError("--parallel-frontend requires geometry generation")
-    gpus = _split_frontend_gpus(material_backend, device) if parallel_frontend else None
     from supratex.inference.runtime import configure_inference_runtime
-    configure_inference_runtime(attention=attention, low_vram=low_vram, device=device,
-                                material_backend=material_backend)
+    policy = configure_inference_runtime(attention=attention, low_vram=low_vram, device=device,
+                                         material_backend=material_backend)
+    gpus = (_frontend_devices(material_backend, device, parallel_frontend, policy["low_vram"])
+            if geometry_package is not None else None)
     if material_base is not None and firered_base is not None:
         raise ValueError("--material-base and --firered-base cannot be combined")
     from supratex.weights import resolve_model_dir
@@ -175,8 +186,7 @@ def run(input_image: Path, output: Path, *, moge_model: str | Path,
     camera["foreground_source"] = foreground_source
     camera_path = output / "camera.json"
     camera_path.write_text(json.dumps(camera, indent=2) + "\n", encoding="utf-8")
-    # Material maps depend only on the foreground condition, not on geometry. With
-    # --parallel-frontend both subprocesses run concurrently, one GPU each.
+    # Material prediction and geometry share only the prepared input photograph.
     geometry_result, geometry_job = {}, None
     if geometry_package is not None:
         def geometry_call() -> dict:
@@ -191,7 +201,8 @@ def run(input_image: Path, output: Path, *, moge_model: str | Path,
             executor = ThreadPoolExecutor(max_workers=1)
             geometry_job = executor.submit(geometry_call)
             executor.shutdown(wait=False)
-            print(f"Frontend: geometry on GPU {gpus[0]}, material on GPU {gpus[1]} in parallel", flush=True)
+            placement = "shared MI300X" if gpus == (None, None) else f"GPUs {gpus[0]} and {gpus[1]}"
+            print(f"Running geometry and material prediction concurrently on {placement}", flush=True)
         else:
             geometry_result = geometry_call()
     material_dir = output / "material"
@@ -227,6 +238,8 @@ def run(input_image: Path, output: Path, *, moge_model: str | Path,
               "material_backend": material_backend}
     if depth_path is not None:
         result["image_depth"] = str(depth_path)
+    if gpus == (None, None):
+        result["execution"] = "concurrent_shared_mi300x"
     if geometry_result:
         result.update(geometry=str(geometry_path), geometry_receipt=geometry_result["receipt"])
     return result
@@ -256,8 +269,8 @@ def main() -> None:
     parser.add_argument("--geometry-revision", help="geometry model Hugging Face revision")
     parser.add_argument("--geometry-initial-mesh-scale", type=float, default=1.0)
     parser.add_argument("--geometry-scale-search", action="store_true", help="enable bounded mesh-scale calibration (default: Pixal3D fixed scale)")
-    parser.add_argument("--parallel-frontend", action="store_true",
-                        help="run geometry and Qwen material concurrently on the first two visible GPUs")
+    parser.add_argument("--parallel-frontend", action=argparse.BooleanOptionalAction, default=None,
+                        help="run geometry and Qwen material concurrently on two GPUs or one high-memory MI300X")
     parser.add_argument("--geometry-target-padding", type=int, default=3)
     parser.add_argument("--geometry-max-iterations", type=int, default=2)
     parser.add_argument("--firered-manifest", type=Path)
